@@ -1,1157 +1,662 @@
-"""
-===================================================================
-APP.PY — Streamlit Web Application
-===================================================================
-Personalized Study Plan Generator using Linear Regression
-Modern Educational UI inspired by TextScribe design
-Dark navbar, light gradient hero, yellow badges, purple/cyan accents
-===================================================================
-"""
+import sys, os
+# ── Fix Windows cp1252 UnicodeEncodeError from emoji in print() calls ──
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
-import streamlit as st
-import pandas as pd
-import numpy as np
+import streamlit as st, pandas as pd, numpy as np, matplotlib, random, joblib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib
-matplotlib.use('Agg')
-import os
-import sys
-import random
-
+from datetime import date
+from dotenv import load_dotenv
+load_dotenv()
 sys.path.insert(0, os.path.dirname(__file__))
 
-from model import (
-    load_data, clean_data, encode_features, analyze_features,
-    select_features, train_model, evaluate_model, save_artifacts,
+from model import (load_data, clean_data, encode_features, analyze_features,
+    select_features, train_xgboost, evaluate_model, save_artifacts,
     load_artifacts, predict_score, plot_correlation_heatmap,
-    plot_actual_vs_predicted, plot_feature_importance
-)
+    plot_actual_vs_predicted, plot_feature_importance, SAVE_DIR)
 from study_plan import generate_study_plan
+from spaced_repetition import (init_db as sr_init_db, add_topic, get_due_items,
+    get_all_items, update_review, get_retention_features, delete_topic)
+from gamification import (init_db as gam_init_db, get_or_create_user,
+    log_study_session, log_review_xp, get_user_stats, BADGE_DEFINITIONS, XP_PER_LEVEL)
+from database import get_db_path
+from auth import (init_auth_db, register_user, login_user,
+    session_login, session_logout, get_session_user, is_authenticated)
+from syllabus_parser import parse_syllabus_pdf
+from email_service import send_study_plan_email
 from sklearn.model_selection import train_test_split
 
-# ─────────────────────────────────────────────
-#  PAGE CONFIG
-# ─────────────────────────────────────────────
-st.set_page_config(
-    page_title="StudyGenie — AI Study Plan Generator",
-    page_icon="🎓",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+st.set_page_config(page_title="StudyGenie", page_icon="🎓",
+    layout="wide", initial_sidebar_state="expanded")
 
-# ─────────────────────────────────────────────
-#  THEME STATE
-# ─────────────────────────────────────────────
-if "theme" not in st.session_state:
-    st.session_state.theme = "dark"
+for k,v in {"theme":"dark","student_name":"","authenticated":False,"auth_user":None}.items():
+    if k not in st.session_state: st.session_state[k]=v
 
 def toggle_theme():
-    st.session_state.theme = "light" if st.session_state.theme == "dark" else "dark"
+    st.session_state.theme="light" if st.session_state.theme=="dark" else "dark"
 
-is_dark = st.session_state.theme == "dark"
+D=st.session_state.theme=="dark"
+BG="#0B0E18" if D else "#F5F3FF"
+CARD="#141929" if D else "#FFFFFF"
+CARD2="#1A2035" if D else "#FAFAFE"
+TP="#FFFFFF" if D else "#1E1B4B"
+TS="#94A3B8" if D else "#475569"
+TM="#64748B" if D else "#94A3B8"
+BC="rgba(148,163,184,0.12)" if D else "rgba(30,27,75,0.08)"
+SBGR="linear-gradient(180deg,#0F1221 0%,#141929 100%)" if D else "linear-gradient(180deg,#1E1B3A 0%,#2D2A5E 100%)"
+HERO="linear-gradient(135deg,#1a1040,#231555,#0F1221)" if D else "linear-gradient(135deg,#F5F3FF,#EDE9FE,#FCE7F3)"
+FORM="#141929" if D else "#FFFFFF"
+HS="rgba(124,58,237,0.15)" if D else "rgba(124,58,237,0.08)"
+PU="#7C3AED"; PL="#A78BFA"; CY="#06B6D4"; GR="#10B981"; RE="#EF4444"; OR="#F59E0B"
 
-# ─────────────────────────────────────────────
-#  THEME PALETTE
-# ─────────────────────────────────────────────
-if is_dark:
-    # Dark navy theme
-    BG_MAIN = "#0B0E18"
-    BG_CARD = "#141929"
-    BG_CARD2 = "#1A2035"
-    TEXT_PRIMARY = "#FFFFFF"
-    TEXT_SECONDARY = "#94A3B8"
-    TEXT_MUTED = "#64748B"
-    BORDER_COLOR = "rgba(148, 163, 184, 0.12)"
-    NAV_BG = "#0F1221"
-    SIDEBAR_BG = "linear-gradient(180deg, #0F1221 0%, #141929 100%)"
-    HERO_BG = "linear-gradient(135deg, #1a1040 0%, #231555 40%, #1B1145 70%, #0F1221 100%)"
-    FORM_BG = "#141929"
-    CODE_BG = "rgba(0,0,0,0.4)"
-    HOVER_SHADOW = "rgba(124, 58, 237, 0.15)"
-else:
-    # Light cream/lavender theme (matching reference)
-    BG_MAIN = "#F5F3FF"
-    BG_CARD = "#FFFFFF"
-    BG_CARD2 = "#FAFAFE"
-    TEXT_PRIMARY = "#1E1B4B"
-    TEXT_SECONDARY = "#475569"
-    TEXT_MUTED = "#94A3B8"
-    BORDER_COLOR = "rgba(30, 27, 75, 0.08)"
-    NAV_BG = "#1E1B3A"
-    SIDEBAR_BG = "linear-gradient(180deg, #1E1B3A 0%, #2D2A5E 100%)"
-    HERO_BG = "linear-gradient(135deg, #F5F3FF 0%, #EDE9FE 40%, #F3E8FF 70%, #FCE7F3 100%)"
-    FORM_BG = "#FFFFFF"
-    CODE_BG = "rgba(124, 58, 237, 0.05)"
-    HOVER_SHADOW = "rgba(124, 58, 237, 0.08)"
-
-# Shared accent colors
-PURPLE = "#7C3AED"
-PURPLE_LIGHT = "#A78BFA"
-YELLOW = "#EAB308"
-YELLOW_BG = "#FEF9C3"
-YELLOW_BORDER = "#EAB308"
-CYAN = "#06B6D4"
-CYAN_BG = "#22D3EE"
-GREEN = "#10B981"
-GREEN_BG = "rgba(16, 185, 129, 0.1)"
-RED = "#EF4444"
-RED_BG = "rgba(239, 68, 68, 0.1)"
-ORANGE = "#F59E0B"
-ORANGE_BG = "rgba(245, 158, 11, 0.1)"
-
-# ─────────────────────────────────────────────
-#  INJECT CSS
-# ─────────────────────────────────────────────
 st.markdown(f"""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap');
-
-    * {{ font-family: 'DM Sans', sans-serif; }}
-    code, pre {{ font-family: 'JetBrains Mono', monospace; }}
-
-    #MainMenu {{visibility: hidden;}}
-    footer {{visibility: hidden;}}
-
-    .stApp {{
-        background: {BG_MAIN};
-    }}
-
-    .main .block-container {{
-        padding-top: 1rem;
-        padding-bottom: 2rem;
-        max-width: 1200px;
-    }}
-
-    /* ─── Global Text Color Overrides ─── */
-    .stApp, .stApp p, .stApp span, .stApp label, .stApp div {{
-        color: {TEXT_PRIMARY};
-    }}
-    .stMarkdown, .stMarkdown p, .stMarkdown span, .stMarkdown li,
-    .stMarkdown h1, .stMarkdown h2, .stMarkdown h3, .stMarkdown h4 {{
-        color: {TEXT_PRIMARY} !important;
-    }}
-    .stSlider label, .stSlider p, .stSlider span,
-    .stSlider [data-testid="stTickBarMin"],
-    .stSlider [data-testid="stTickBarMax"],
-    .stSlider [data-testid="stThumbValue"] {{
-        color: {TEXT_PRIMARY} !important;
-    }}
-    .stSelectbox label, .stSelectbox span,
-    .stNumberInput label, .stTextInput label {{
-        color: {TEXT_PRIMARY} !important;
-    }}
-    .stRadio label, .stRadio span, .stRadio div {{
-        color: {TEXT_PRIMARY} !important;
-    }}
-    [data-testid="stForm"] label,
-    [data-testid="stForm"] p,
-    [data-testid="stForm"] span,
-    [data-testid="stForm"] h1,
-    [data-testid="stForm"] h2,
-    [data-testid="stForm"] h3,
-    [data-testid="stForm"] h4 {{
-        color: {TEXT_PRIMARY} !important;
-    }}
-    [data-baseweb="select"] span,
-    [data-baseweb="select"] div {{
-        color: {TEXT_PRIMARY} !important;
-    }}
-
-    /* ─── Sidebar (Always dark like TextScribe navbar) ─── */
-    [data-testid="stSidebar"] {{
-        background: {SIDEBAR_BG};
-        border-right: 1px solid rgba(255,255,255,0.06);
-    }}
-    [data-testid="stSidebar"] * {{
-        color: #E2E8F0 !important;
-    }}
-    [data-testid="stSidebar"] .stMarkdown h1,
-    [data-testid="stSidebar"] .stMarkdown h2,
-    [data-testid="stSidebar"] .stMarkdown h3 {{
-        color: #FFFFFF !important;
-    }}
-
-    /* ─── Yellow Badge (like reference) ─── */
-    .ts-badge {{
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        background: {YELLOW_BG};
-        border: 1.5px solid {YELLOW_BORDER};
-        color: #92400E !important;
-        padding: 6px 18px;
-        border-radius: 6px;
-        font-size: 0.82rem;
-        font-weight: 700;
-        letter-spacing: 0.3px;
-        margin-bottom: 20px;
-        z-index: 2;
-        position: relative;
-    }}
-
-    /* ─── Hero Section ─── */
-    .ts-hero {{
-        background: {HERO_BG};
-        border-radius: 20px;
-        padding: 48px 44px;
-        margin-bottom: 32px;
-        position: relative;
-        overflow: hidden;
-        border: 1px solid {BORDER_COLOR};
-    }}
-    .ts-hero-title {{
-        font-size: 2.8rem;
-        font-weight: 900;
-        color: {TEXT_PRIMARY};
-        line-height: 1.15;
-        margin-bottom: 16px;
-        letter-spacing: -1.5px;
-        position: relative;
-        z-index: 2;
-    }}
-    .ts-hero-sub {{
-        font-size: 1.05rem;
-        color: {TEXT_SECONDARY};
-        line-height: 1.75;
-        max-width: 520px;
-        position: relative;
-        z-index: 2;
-    }}
-
-    /* ─── Interactive Demo Card (cyan, like reference) ─── */
-    .ts-demo-card {{
-        background: {CYAN_BG};
-        border-radius: 16px;
-        padding: 20px;
-        position: relative;
-        z-index: 2;
-        box-shadow: 8px 8px 0px rgba(0,0,0,0.15);
-        border: 2px solid rgba(0,0,0,0.1);
-    }}
-    .ts-demo-dots {{
-        display: flex;
-        gap: 6px;
-        margin-bottom: 12px;
-    }}
-    .ts-demo-dots span {{
-        width: 12px;
-        height: 12px;
-        border-radius: 50%;
-        display: inline-block;
-    }}
-    .ts-demo-inner {{
-        background: #FFFFFF;
-        border: 2px solid rgba(0,0,0,0.15);
-        border-radius: 8px;
-        padding: 16px;
-        min-height: 80px;
-        margin-bottom: 12px;
-    }}
-    .ts-demo-output {{
-        background: {GREEN};
-        color: white !important;
-        border-radius: 8px;
-        padding: 12px 20px;
-        font-weight: 700;
-        font-size: 1rem;
-        text-align: center;
-    }}
-
-    /* ─── Stat Row ─── */
-    .ts-stat {{
-        text-align: center;
-        padding: 20px 16px;
-    }}
-    .ts-stat-val {{
-        font-size: 1.6rem;
-        font-weight: 900;
-        color: {TEXT_PRIMARY};
-        letter-spacing: -0.5px;
-    }}
-    .ts-stat-label {{
-        font-size: 0.78rem;
-        color: {TEXT_MUTED};
-        font-weight: 500;
-        margin-top: 4px;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }}
-
-    /* ─── Cards ─── */
-    .ts-card {{
-        background: {BG_CARD};
-        border: 1px solid {BORDER_COLOR};
-        border-radius: 16px;
-        padding: 28px;
-        margin-bottom: 16px;
-        transition: all 0.3s ease;
-    }}
-    .ts-card:hover {{
-        box-shadow: 0 8px 30px {HOVER_SHADOW};
-        transform: translateY(-3px);
-    }}
-
-    /* ─── Feature Step Cards ─── */
-    .ts-step {{
-        background: {BG_CARD};
-        border: 1px solid {BORDER_COLOR};
-        border-radius: 16px;
-        padding: 28px 24px;
-        text-align: center;
-        transition: all 0.3s ease;
-        height: 100%;
-    }}
-    .ts-step:hover {{
-        box-shadow: 0 8px 30px {HOVER_SHADOW};
-        transform: translateY(-4px);
-        border-color: {PURPLE}30;
-    }}
-    .ts-step-num {{
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 44px;
-        height: 44px;
-        border-radius: 12px;
-        font-size: 1.2rem;
-        font-weight: 800;
-        margin-bottom: 16px;
-    }}
-    .ts-step-title {{
-        font-size: 1.05rem;
-        font-weight: 700;
-        color: {TEXT_PRIMARY};
-        margin-bottom: 10px;
-    }}
-    .ts-step-desc {{
-        font-size: 0.88rem;
-        color: {TEXT_SECONDARY};
-        line-height: 1.65;
-    }}
-
-    /* ─── Purple button (like reference) ─── */
-    .stButton > button {{
-        background: linear-gradient(135deg, #7C3AED, #6D28D9) !important;
-        color: white !important;
-        border: none !important;
-        border-radius: 10px !important;
-        padding: 14px 36px !important;
-        font-weight: 700 !important;
-        font-size: 0.95rem !important;
-        transition: all 0.3s ease !important;
-        width: 100%;
-    }}
-    .stButton > button:hover {{
-        box-shadow: 0 6px 20px rgba(124, 58, 237, 0.35) !important;
-        transform: translateY(-2px) !important;
-    }}
-
-    /* ─── Score Display ─── */
-    .ts-score {{
-        text-align: center;
-        padding: 40px;
-        border-radius: 20px;
-        margin: 20px 0;
-        border: 2px solid;
-    }}
-    .ts-score-num {{
-        font-size: 4.5rem;
-        font-weight: 900;
-        letter-spacing: -3px;
-        line-height: 1;
-    }}
-    .ts-score-tag {{
-        font-size: 0.85rem;
-        text-transform: uppercase;
-        letter-spacing: 3px;
-        font-weight: 700;
-        margin-top: 8px;
-    }}
-
-    /* ─── Metric boxes ─── */
-    .ts-metric {{
-        background: {BG_CARD};
-        border: 1px solid {BORDER_COLOR};
-        border-radius: 14px;
-        padding: 24px;
-        text-align: center;
-    }}
-    .ts-metric-val {{
-        font-size: 1.8rem;
-        font-weight: 800;
-        color: {PURPLE};
-    }}
-    .ts-metric-label {{
-        font-size: 0.75rem;
-        color: {TEXT_MUTED};
-        text-transform: uppercase;
-        letter-spacing: 1.5px;
-        font-weight: 600;
-        margin-top: 6px;
-    }}
-
-    /* ─── Section headings ─── */
-    .ts-heading {{
-        font-size: 1.6rem;
-        font-weight: 800;
-        color: {TEXT_PRIMARY};
-        margin: 32px 0 6px 0;
-        letter-spacing: -0.5px;
-    }}
-    .ts-subheading {{
-        font-size: 0.95rem;
-        color: {TEXT_SECONDARY};
-        margin-bottom: 24px;
-    }}
-
-    /* ─── Divider ─── */
-    .ts-divider {{
-        height: 1px;
-        background: {BORDER_COLOR};
-        margin: 32px 0;
-    }}
-
-    /* ─── Glass panel ─── */
-    .ts-glass {{
-        background: {BG_CARD};
-        border: 1px solid {BORDER_COLOR};
-        border-radius: 16px;
-        padding: 28px;
-        margin-bottom: 16px;
-    }}
-    .ts-glass h4 {{
-        color: {TEXT_PRIMARY};
-        font-weight: 700;
-        margin-bottom: 14px;
-    }}
-    .ts-glass p, .ts-glass li {{
-        color: {TEXT_SECONDARY};
-        line-height: 1.8;
-    }}
-    .ts-glass strong {{
-        color: {TEXT_PRIMARY};
-    }}
-
-    /* ─── Form container ─── */
-    .stForm {{
-        background: {FORM_BG};
-        border: 1px solid {BORDER_COLOR};
-        border-radius: 16px;
-        padding: 24px;
-    }}
-
-    .stAlert {{
-        border-radius: 12px !important;
-    }}
-
-    /* ─── Slider ─── */
-    .stSlider > div > div > div > div {{
-        background-color: {PURPLE};
-    }}
-
-    /* ─── Selectbox / Dropdown fix ─── */
-    [data-baseweb="select"] {{
-        background-color: {BG_CARD} !important;
-    }}
-    [data-baseweb="select"] > div {{
-        background-color: {BG_CARD} !important;
-        color: {TEXT_PRIMARY} !important;
-        border-color: {BORDER_COLOR} !important;
-    }}
-    [data-baseweb="select"] span {{
-        color: {TEXT_PRIMARY} !important;
-    }}
-    /* Dropdown menu (opened list) */
-    [data-baseweb="popover"] {{
-        background-color: {BG_CARD} !important;
-    }}
-    [data-baseweb="popover"] ul {{
-        background-color: {BG_CARD} !important;
-    }}
-    [data-baseweb="popover"] li {{
-        background-color: {BG_CARD} !important;
-        color: {TEXT_PRIMARY} !important;
-    }}
-    [data-baseweb="popover"] li:hover {{
-        background-color: {PURPLE}20 !important;
-    }}
-    [data-baseweb="menu"] {{
-        background-color: {BG_CARD} !important;
-    }}
-    [data-baseweb="menu"] li {{
-        color: {TEXT_PRIMARY} !important;
-    }}
-    [role="option"] {{
-        color: {TEXT_PRIMARY} !important;
-        background-color: {BG_CARD} !important;
-    }}
-    [role="option"]:hover {{
-        background-color: {PURPLE}15 !important;
-    }}
-    [aria-selected="true"] {{
-        background-color: {PURPLE}20 !important;
-    }}
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700;900&display=swap');
+*{{font-family:'DM Sans',sans-serif;}} #MainMenu,footer{{visibility:hidden;}}
+.stApp{{background:{BG};}}
+.stApp,.stApp p,.stApp span,.stApp label,.stApp div{{color:{TP};}}
+.stMarkdown,.stMarkdown p,.stMarkdown li,.stMarkdown h1,.stMarkdown h2,.stMarkdown h3,.stMarkdown h4{{color:{TP}!important;}}
+.stSlider label,.stSlider p,.stSlider span{{color:{TP}!important;}}
+.stSelectbox label,.stNumberInput label,.stTextInput label,.stRadio label{{color:{TP}!important;}}
+[data-testid="stSidebar"]{{background:{SBGR};border-right:1px solid rgba(255,255,255,0.06);}}
+[data-testid="stSidebar"] *{{color:#E2E8F0!important;}}
+.stButton>button{{background:linear-gradient(135deg,#7C3AED,#6D28D9)!important;color:white!important;
+  border:none!important;border-radius:10px!important;padding:12px 28px!important;
+  font-weight:700!important;transition:all 0.3s!important;width:100%;}}
+.stButton>button:hover{{box-shadow:0 6px 20px rgba(124,58,237,0.35)!important;transform:translateY(-2px)!important;}}
+.card{{background:{CARD};border:1px solid {BC};border-radius:16px;padding:24px;margin-bottom:16px;transition:all 0.3s;}}
+.card:hover{{box-shadow:0 8px 30px {HS};transform:translateY(-2px);}}
+.metric{{background:{CARD};border:1px solid {BC};border-radius:14px;padding:20px;text-align:center;}}
+.metric-val{{font-size:1.8rem;font-weight:800;color:{PU};}}
+.metric-lbl{{font-size:0.75rem;color:{TM};text-transform:uppercase;letter-spacing:1.5px;font-weight:600;margin-top:6px;}}
+.badge{{display:inline-flex;align-items:center;gap:6px;background:#FEF9C3;border:1.5px solid #EAB308;
+  color:#92400E!important;padding:5px 16px;border-radius:6px;font-size:0.8rem;font-weight:700;margin-bottom:16px;}}
+.xp-outer{{background:{CARD2};border:1px solid {BC};border-radius:999px;height:12px;overflow:hidden;margin:8px 0;}}
+.xp-inner{{height:100%;border-radius:999px;background:linear-gradient(90deg,{PU},{CY});transition:width 0.5s;}}
+.glass{{background:{CARD};border:1px solid {BC};border-radius:16px;padding:24px;margin-bottom:16px;}}
+.glass h4{{color:{TP};font-weight:700;margin-bottom:12px;}}
+.glass p,.glass li{{color:{TS};line-height:1.8;}}
+.review-card{{background:{CARD};border:1px solid {BC};border-radius:16px;padding:18px 22px;margin-bottom:12px;}}
+[data-baseweb="select"]>div{{background:{CARD}!important;color:{TP}!important;border-color:{BC}!important;}}
+[data-baseweb="popover"] li{{background:{CARD}!important;color:{TP}!important;}}
 </style>
 """, unsafe_allow_html=True)
 
+DB_PATH=get_db_path()
+sr_init_db(DB_PATH); gam_init_db(DB_PATH); init_auth_db(DB_PATH)
 
-# ─────────────────────────────────────────────
-#  LOAD MODEL
-# ─────────────────────────────────────────────
-@st.cache_resource
-def get_model_and_data():
-    save_dir = os.path.join(os.path.dirname(__file__), "saved_model")
-    model_path = os.path.join(save_dir, "linear_regression_model.pkl")
-
-    df_raw = load_data()
-    df_clean = clean_data(df_raw)
-    df_encoded, encoders = encode_features(df_clean)
-
-    if os.path.exists(model_path):
-        model, encoders_saved, features, metrics = load_artifacts(save_dir)
-        X = df_encoded[features]
-        y = df_encoded["exam_score"]
-        _, X_test, _, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        y_pred = model.predict(X_test)
-        return model, encoders_saved, features, metrics, df_encoded, y_test, y_pred
+@st.cache_resource(show_spinner="🤖 Loading model…")
+def get_model():
+    xp=os.path.join(SAVE_DIR,"xgboost_model.pkl")
+    df_raw=load_data(); df_clean=clean_data(df_raw)
+    df_enc,encoders=encode_features(df_clean)
+    if os.path.exists(xp):
+        model,_,features,metrics=load_artifacts(SAVE_DIR)
+        X=df_clean[features]; y=df_clean["exam_score"]
+        _,Xt,_,yt=train_test_split(X,y,test_size=0.2,random_state=42)
+        yp=np.clip(model.predict(Xt),0,100)
     else:
-        analyze_features(df_encoded)
-        selected = select_features(df_encoded)
-        model, X_train, X_test, y_train, y_test = train_model(df_encoded, selected)
-        metrics, y_pred = evaluate_model(model, X_test, y_test)
-        save_artifacts(model, encoders, selected, metrics)
-        return model, encoders, selected, metrics, df_encoded, y_test, y_pred
+        analyze_features(df_enc); sel=select_features(df_enc)
+        pipeline,_,Xt,_,yt,_,_=train_xgboost(df_clean,sel,n_trials=5)
+        metrics,yp=evaluate_model(pipeline,Xt,yt,None)
+        save_artifacts(pipeline,encoders,sel,metrics)
+        model=pipeline; features=sel
+    lr_m=None
+    lrp=os.path.join(SAVE_DIR,"lr_metrics_baseline.pkl")
+    if os.path.exists(lrp):
+        try: lr_m=joblib.load(lrp)
+        except: pass
+    return model,encoders,features,metrics,df_enc,yt,yp,lr_m
 
-model, encoders, features, metrics, df_encoded, y_test, y_pred = get_model_and_data()
-r2_val = metrics.get("R2_Score", 0)
+model,encoders,features,metrics,df_enc,y_test,y_pred,lr_metrics=get_model()
+r2=metrics.get("R2_Score",0)
 
+def cur_user():
+    au=get_session_user()
+    if not au: return None
+    return get_or_create_user(au["display_name"],DB_PATH)
 
-# ─────────────────────────────────────────────
-#  SIDEBAR (Always dark, like TextScribe navbar)
-# ─────────────────────────────────────────────
+# ═══════════ AUTH WALL ═══════════
+if not is_authenticated():
+    st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+
+    .stApp { background: #080b14 !important; }
+    [data-testid="stHeader"] { display: none !important; }
+    .main .block-container { padding-top: 1rem !important; padding-bottom: 0 !important; max-width: 100% !important; }
+
+    .auth-bg { position:fixed;top:0;left:0;width:100vw;height:100vh;overflow:hidden;pointer-events:none;z-index:0; }
+    .orb { position:absolute;border-radius:50%;filter:blur(90px);opacity:0.2;animation:floatOrb 12s ease-in-out infinite alternate; }
+    .orb1 { width:500px;height:500px;background:radial-gradient(circle,#7C3AED,#4F46E5);top:-140px;left:-140px;animation-duration:14s; }
+    .orb2 { width:380px;height:380px;background:radial-gradient(circle,#06B6D4,#0EA5E9);bottom:-80px;right:-60px;animation-duration:11s;animation-delay:-3s; }
+    .orb3 { width:260px;height:260px;background:radial-gradient(circle,#EC4899,#8B5CF6);top:35%;left:48%;animation-duration:16s;animation-delay:-7s; }
+    @keyframes floatOrb { 0%{transform:translate(0,0) scale(1);} 100%{transform:translate(35px,25px) scale(1.1);} }
+
+    .auth-grid { position:fixed;top:0;left:0;width:100vw;height:100vh;pointer-events:none;z-index:0;
+        background-image:linear-gradient(rgba(124,58,237,0.035) 1px,transparent 1px),linear-gradient(90deg,rgba(124,58,237,0.035) 1px,transparent 1px);
+        background-size:44px 44px; }
+
+    .auth-logo-icon { width:54px;height:54px;border-radius:15px;background:linear-gradient(135deg,#7C3AED,#06B6D4);
+        display:flex;align-items:center;justify-content:center;font-size:1.65rem;margin-bottom:12px;
+        box-shadow:0 0 28px rgba(124,58,237,0.5);animation:pulseGlow 3s ease-in-out infinite alternate; }
+    @keyframes pulseGlow { from{box-shadow:0 0 16px rgba(124,58,237,0.35);} to{box-shadow:0 0 38px rgba(124,58,237,0.65);} }
+    .auth-logo-title { font-family:'Inter',sans-serif;font-size:2.3rem;font-weight:800;
+        background:linear-gradient(135deg,#A78BFA 0%,#38BDF8 100%);
+        -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
+        letter-spacing:-1.5px;line-height:1.1;margin-bottom:7px; }
+    .auth-logo-sub { font-family:'Inter',sans-serif;font-size:0.78rem;color:#64748B;
+        letter-spacing:2px;text-transform:uppercase;font-weight:500;margin-bottom:18px; }
+    .auth-tagline { font-family:'Inter',sans-serif;font-size:0.93rem;color:#94A3B8;line-height:1.7;margin-bottom:20px; }
+    .auth-pill { display:inline-block;background:rgba(124,58,237,0.12);border:1px solid rgba(124,58,237,0.28);
+        border-radius:99px;padding:4px 11px;font-size:0.7rem;color:#A78BFA;font-weight:600;
+        font-family:'Inter',sans-serif;margin:3px 3px 3px 0; }
+
+    .auth-card-line { height:2px;border-radius:2px;
+        background:linear-gradient(90deg,transparent,#7C3AED,#06B6D4,transparent);margin-bottom:16px; }
+    .auth-heading { font-family:'Inter',sans-serif;font-size:1.22rem;font-weight:700;
+        color:#F1F5F9;margin-bottom:3px;letter-spacing:-0.4px; }
+    .auth-sub { font-family:'Inter',sans-serif;font-size:0.77rem;color:#64748B;margin-bottom:12px; }
+
+    .stTextInput input { background:rgba(255,255,255,0.04) !important;
+        border:1.5px solid rgba(148,163,184,0.14) !important;border-radius:10px !important;
+        color:#F1F5F9 !important;padding:9px 13px !important;font-size:0.86rem !important;
+        font-family:'Inter',sans-serif !important;transition:all 0.2s !important; }
+    .stTextInput input:focus { border-color:rgba(124,58,237,0.65) !important;
+        box-shadow:0 0 0 3px rgba(124,58,237,0.13) !important;
+        background:rgba(124,58,237,0.05) !important;outline:none !important; }
+    .stTextInput input::placeholder { color:#3D4A5C !important; }
+    .stTextInput label { font-family:'Inter',sans-serif !important;font-size:0.72rem !important;
+        font-weight:600 !important;color:#94A3B8 !important;text-transform:uppercase !important;
+        letter-spacing:0.8px !important;margin-bottom:3px !important; }
+
+    [data-testid="stForm"] .stButton > button { background:linear-gradient(135deg,#7C3AED 0%,#4F46E5 60%,#06B6D4 100%) !important;
+        border:none !important;border-radius:10px !important;color:#fff !important;font-weight:700 !important;
+        font-size:0.87rem !important;padding:10px 22px !important;width:100% !important;
+        font-family:'Inter',sans-serif !important;box-shadow:0 4px 18px rgba(124,58,237,0.32) !important;
+        transition:all 0.25s !important;margin-top:4px !important; }
+    [data-testid="stForm"] .stButton > button:hover { transform:translateY(-2px) !important;
+        box-shadow:0 8px 26px rgba(124,58,237,0.52) !important;filter:brightness(1.08) !important; }
+
+    .stTabs [data-baseweb="tab-list"] { background:rgba(255,255,255,0.04) !important;
+        border-radius:10px !important;padding:3px !important;gap:3px !important;
+        border-bottom:none !important;margin-bottom:12px !important; }
+    .stTabs [data-baseweb="tab"] { border-radius:7px !important;padding:7px 14px !important;
+        font-weight:600 !important;font-size:0.79rem !important;color:#64748B !important;
+        background:transparent !important;border:none !important;
+        font-family:'Inter',sans-serif !important;transition:all 0.22s !important; }
+    .stTabs [aria-selected="true"] { background:linear-gradient(135deg,#7C3AED,#6D28D9) !important;
+        color:#fff !important;box-shadow:0 3px 12px rgba(124,58,237,0.38) !important; }
+    .stTabs [data-baseweb="tab-highlight"],.stTabs [data-baseweb="tab-border"] { display:none !important; }
+    .stAlert { border-radius:10px !important;font-family:'Inter',sans-serif !important; }
+    </style>
+    <div class="auth-bg"><div class="orb orb1"></div><div class="orb orb2"></div><div class="orb orb3"></div></div>
+    <div class="auth-grid"></div>
+    """, unsafe_allow_html=True)
+
+    col_brand, col_form = st.columns([1.1, 1])
+
+    with col_brand:
+        st.markdown("""
+        <div style="display:flex;flex-direction:column;justify-content:center;
+                    min-height:88vh;padding:10px 20px 10px 6px;position:relative;z-index:10;">
+            <div class="auth-logo-icon">🎓</div>
+            <div class="auth-logo-title">StudyGenie</div>
+            <div class="auth-logo-sub">AI-Powered Study Intelligence</div>
+            <div class="auth-tagline">
+                Analyse your study habits, get an XGBoost-predicted exam score,
+                a personalised study plan and gamified achievements — all in one place.
+            </div>
+            <div>
+                <span class="auth-pill">⚡ XGBoost Predictions</span>
+                <span class="auth-pill">🧠 Spaced Repetition</span>
+                <span class="auth-pill">🏆 Gamified Learning</span>
+                <span class="auth-pill">📄 Syllabus Parser</span>
+                <span class="auth-pill">📧 Email Plans</span>
+            </div>
+            <div style="margin-top:20px;font-size:0.72rem;color:#334155;font-family:'Inter',sans-serif;">
+                🔒 Data stored locally &nbsp;·&nbsp; No third-party tracking
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col_form:
+        st.markdown("""<div style="position:relative;z-index:10;padding-top:2px;">
+        <div class="auth-card-line"></div></div>""", unsafe_allow_html=True)
+
+        tab_login, tab_reg = st.tabs(["🔑 Sign In", "✨ Create Account"])
+
+        with tab_login:
+            st.markdown("""<div class="auth-heading">Welcome back! 👋</div>
+            <div class="auth-sub">Sign in to continue your learning journey</div>""", unsafe_allow_html=True)
+            with st.form("login_form"):
+                lemail = st.text_input("Email Address", placeholder="you@example.com", key="l_email")
+                lpw    = st.text_input("Password", type="password", placeholder="Enter your password", key="l_pw")
+                lsub   = st.form_submit_button("✶ Sign In — Let's Study!")
+            if lsub:
+                res = login_user(lemail, lpw, DB_PATH)
+                if res["success"]:
+                    session_login(res["user"])
+                    st.success(f"Welcome back, **{res['user']['display_name']}**! 👋")
+                    st.rerun()
+                else:
+                    st.error(f"🚫 {res['error']}")
+
+        with tab_reg:
+            st.markdown("""<div class="auth-heading">Create your account ✨</div>
+            <div class="auth-sub">Join thousands of students boosting their grades</div>""", unsafe_allow_html=True)
+            with st.form("reg_form"):
+                rname  = st.text_input("Display Name", placeholder="e.g. Aniket Sharma", key="r_name")
+                remail = st.text_input("Email Address", placeholder="you@example.com", key="r_email")
+                rpw    = st.text_input("Password", type="password", placeholder="Min. 6 characters", key="r_pw")
+                rpw2   = st.text_input("Confirm Password", type="password", placeholder="Repeat your password", key="r_pw2")
+                rsub   = st.form_submit_button("🚀 Create My Account")
+            if rsub:
+                if rpw != rpw2:
+                    st.error("🚫 Passwords do not match. Please try again.")
+                else:
+                    res = register_user(remail, rname, rpw, DB_PATH)
+                    if res["success"]:
+                        session_login(res["user"])
+                        st.success(f"🎉 Welcome to StudyGenie, **{rname}**!")
+                        st.rerun()
+                    else:
+                        st.error(f"🚫 {res['error']}")
+
+    st.stop()
+
+# ═══════════ SIDEBAR ═══════════
+auth_user = get_session_user()
 with st.sidebar:
     st.markdown(f"""
-    <div style="text-align: center; padding: 10px 0 6px 0;">
-        <div style="font-size: 1.5rem; font-weight: 900; color: #F9A825 !important;
-             letter-spacing: 1px; text-transform: uppercase;">
-            STUDYGENIE
-        </div>
-        <div style="font-size: 0.7rem; color: #94A3B8 !important; letter-spacing: 2px;
-             text-transform: uppercase; margin-top: 2px;">
-            AI STUDY PLAN GENERATOR
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
+    <div style="text-align:center;padding:10px 0 4px;">
+      <div style="font-size:1.4rem;font-weight:900;color:#F9A825;">STUDYGENIE</div>
+      <div style="font-size:0.65rem;color:#94A3B8;letter-spacing:2px;">XGBoost AI ENGINE</div>
+    </div>""", unsafe_allow_html=True)
     st.markdown("---")
-
-    page = st.radio(
-        "Navigate",
-        ["🏠 Home", "🔮 Predict & Plan", "📊 Model Insights", "ℹ️ About"],
-        label_visibility="collapsed"
-    )
-
+    u=cur_user()
+    if u:
+        _s=get_user_stats(u["id"],DB_PATH)
+        st.markdown(f"""
+        <div style="background:rgba(255,255,255,0.05);border-radius:10px;padding:10px 14px;
+                    border:1px solid rgba(255,255,255,0.08);margin-bottom:8px;">
+          <div style="font-weight:700;color:#F9A825;font-size:0.95rem;">👤 {auth_user["display_name"]}</div>
+          <div style="font-size:0.78rem;color:#94A3B8;">{auth_user["email"]}</div>
+          <div style="display:flex;gap:12px;margin-top:8px;">
+            <span style="color:#F59E0B;font-size:0.82rem;">🔥 {_s.get("current_streak",0)}d</span>
+            <span style="color:#A78BFA;font-size:0.82rem;">⚡ {_s.get("xp",0):,} XP</span>
+            <span style="color:#06B6D4;font-size:0.82rem;">Lv {_s.get("level",1)}</span>
+          </div>
+        </div>""", unsafe_allow_html=True)
     st.markdown("---")
-
-    theme_icon = "☀️ Light Mode" if is_dark else "🌙 Dark Mode"
-    st.button(theme_icon, on_click=toggle_theme, key="theme_toggle")
-
+    page=st.radio("Navigate",["🏠 Home","🔮 Predict & Plan","🧠 Review Schedule",
+        "🏆 Achievements","📊 Model Insights","ℹ️ About"],label_visibility="collapsed")
     st.markdown("---")
-
+    ti="☀️ Light Mode" if D else "🌙 Dark Mode"
+    st.button(ti,on_click=toggle_theme,key="theme_btn")
+    st.markdown("---")
+    if st.button("🚪 Sign Out",key="signout_btn"):
+        session_logout(); st.rerun()
     st.markdown(f"""
-    <div style="background: rgba(255,255,255,0.05); border-radius: 12px;
-                padding: 16px; border: 1px solid rgba(255,255,255,0.08);">
-        <div style="font-size: 0.68rem; color: #64748B !important; letter-spacing: 1.5px;
-             text-transform: uppercase; font-weight: 600;">Model Status</div>
-        <div style="font-size: 1rem; font-weight: 700; color: #10B981 !important;
-             margin: 6px 0;">● Active</div>
-        <div style="font-size: 0.8rem; color: #94A3B8 !important;">
-            R² Score: <b style="color: #FFFFFF !important;">{r2_val}</b>
-        </div>
-        <div style="font-size: 0.8rem; color: #94A3B8 !important;">
-            Algorithm: <b style="color: #FFFFFF !important;">Linear Regression</b>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-
-# ═══════════════════════════════════════════════
-#  PAGE: HOME
-# ═══════════════════════════════════════════════
-if page == "🏠 Home":
-
-    # ── Dynamic demo: pick random student from dataset ──
-    demo_study = round(random.uniform(1, 8), 1)
-    demo_sleep = round(random.uniform(5, 9), 1)
-    demo_social = round(random.uniform(0.5, 5), 1)
-    demo_attend = round(random.uniform(60, 98), 0)
-    demo_exercise = random.randint(1, 6)
-    demo_mental = random.randint(3, 9)
-    demo_input = {
-        "age": random.randint(18, 25), "gender": random.choice(["Male", "Female"]),
-        "study_hours_per_day": demo_study, "social_media_hours": demo_social,
-        "netflix_hours": round(random.uniform(0, 4), 1),
-        "part_time_job": random.choice(["No", "Yes"]),
-        "attendance_percentage": demo_attend, "sleep_hours": demo_sleep,
-        "diet_quality": random.choice(["Good", "Fair", "Poor"]),
-        "exercise_frequency": demo_exercise,
-        "parental_education_level": random.choice(["High School", "Bachelor", "Master"]),
-        "internet_quality": random.choice(["Good", "Average"]),
-        "mental_health_rating": demo_mental,
-        "extracurricular_participation": random.choice(["No", "Yes"]),
-    }
-    demo_enc = {}
-    for k, v in demo_input.items():
-        if k in encoders:
-            try: demo_enc[k] = encoders[k].transform([str(v)])[0]
-            except: demo_enc[k] = 0
-        else: demo_enc[k] = v
-    demo_score = predict_score(model, features, demo_enc)
-
-    # Hero with two columns
-    hero_col1, hero_col2 = st.columns([3, 2])
-
-    with hero_col1:
-        st.markdown(f"""
-        <div style="padding: 20px 0;">
-            <div class="ts-badge">🤖 AI-Powered Study Tool</div>
-            <div class="ts-hero-title">
-                Transform Your<br>Study Habits Into<br>Better Grades
-            </div>
-            <div class="ts-hero-sub">
-                Analyze your daily habits — study hours, sleep, social media,
-                attendance — and get an AI-predicted exam score with a
-                <strong style="color: {TEXT_PRIMARY};">personalized study plan</strong>
-                tailored just for you.
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with hero_col2:
-        st.markdown(f"""
-        <div class="ts-demo-card">
-            <div class="ts-demo-dots">
-                <span style="background: #EF4444;"></span>
-                <span style="background: #F59E0B;"></span>
-                <span style="background: #10B981;"></span>
-            </div>
-            <div style="font-weight: 700; color: #1E1B4B !important; margin-bottom: 10px;
-                        font-size: 0.9rem;">📊 Live Student Analysis</div>
-            <div class="ts-demo-inner">
-                <div style="font-size: 0.82rem; color: #64748B;">
-                    📖 Study: <b>{demo_study}</b> hrs &nbsp;|&nbsp; 😴 Sleep: <b>{demo_sleep}</b> hrs<br>
-                    📱 Social Media: <b>{demo_social}</b> hrs &nbsp;|&nbsp; 🏃 Exercise: <b>{demo_exercise}</b> days/wk<br>
-                    🏫 Attendance: <b>{int(demo_attend)}%</b> &nbsp;|&nbsp; 🧠 Mental Health: <b>{demo_mental}/10</b>
-                </div>
-            </div>
-            <div class="ts-demo-output">
-                🎯 Predicted Score: {demo_score} / 100
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    # Stats row
-    st.markdown(f'<div class="ts-divider"></div>', unsafe_allow_html=True)
-
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.markdown(f"""
-        <div class="ts-stat">
-            <div class="ts-stat-val">1000+</div>
-            <div class="ts-stat-label">Students Analyzed</div>
-        </div>""", unsafe_allow_html=True)
-    with c2:
-        st.markdown(f"""
-        <div class="ts-stat">
-            <div class="ts-stat-val">{r2_val}</div>
-            <div class="ts-stat-label">R² Accuracy</div>
-        </div>""", unsafe_allow_html=True)
-    with c3:
-        st.markdown(f"""
-        <div class="ts-stat">
-            <div class="ts-stat-val">Linear Reg.</div>
-            <div class="ts-stat-label">Algorithm</div>
-        </div>""", unsafe_allow_html=True)
-    with c4:
-        st.markdown(f"""
-        <div class="ts-stat">
-            <div class="ts-stat-val">&lt;1s</div>
-            <div class="ts-stat-label">Prediction Time</div>
-        </div>""", unsafe_allow_html=True)
-
-    st.markdown(f'<div class="ts-divider"></div>', unsafe_allow_html=True)
-
-    # How it works
-    st.markdown(f"""
-    <div class="ts-heading">✨ How It Works</div>
-    <div class="ts-subheading">Three simple steps to get your personalized study plan</div>
-    """, unsafe_allow_html=True)
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.markdown(f"""
-        <div class="ts-step">
-            <div class="ts-step-num" style="background: {YELLOW_BG}; color: #92400E;">1</div>
-            <div class="ts-step-title">Input Your Habits</div>
-            <div class="ts-step-desc">
-                Enter your daily study hours, sleep, social media usage,
-                attendance, and other lifestyle habits.
-            </div>
-        </div>""", unsafe_allow_html=True)
-    with c2:
-        st.markdown(f"""
-        <div class="ts-step">
-            <div class="ts-step-num" style="background: #EDE9FE; color: {PURPLE};">2</div>
-            <div class="ts-step-title">AI Predicts Score</div>
-            <div class="ts-step-desc">
-                Linear Regression analyzes your habits and predicts
-                your exam score based on 1000+ student data points.
-            </div>
-        </div>""", unsafe_allow_html=True)
-    with c3:
-        st.markdown(f"""
-        <div class="ts-step">
-            <div class="ts-step-num" style="background: #D1FAE5; color: #065F46;">3</div>
-            <div class="ts-step-title">Get Your Plan</div>
-            <div class="ts-step-desc">
-                Receive a personalized study plan with specific
-                recommendations to boost your performance.
-            </div>
-        </div>""", unsafe_allow_html=True)
-
-    st.markdown(f'<div class="ts-divider"></div>', unsafe_allow_html=True)
-    st.markdown(f"""
-    <div style="text-align: center; padding: 16px 0;">
-        <p style="font-size: 1.1rem; color: {TEXT_SECONDARY};">
-            Ready? Head to <strong style="color: {PURPLE};">🔮 Predict & Plan</strong> in the sidebar!
-        </p>
+    <div style="background:rgba(255,255,255,0.04);border-radius:10px;padding:12px;
+                border:1px solid rgba(255,255,255,0.06);margin-top:8px;">
+      <div style="font-size:0.65rem;color:#64748B;text-transform:uppercase;letter-spacing:1px;">Model</div>
+      <div style="font-size:0.9rem;font-weight:700;color:#10B981;margin:4px 0;">● Active</div>
+      <div style="font-size:0.78rem;color:#94A3B8;">R²: <b style="color:#fff;">{r2}</b></div>
     </div>""", unsafe_allow_html=True)
 
+# ═══════════ HOME PAGE ═══════════
+if page == "🏠 Home":
+    d_study=round(__import__("random").uniform(1,8),1)
+    d_sleep=round(__import__("random").uniform(5,9),1)
+    d_social=round(__import__("random").uniform(0.5,5),1)
+    d_att=round(__import__("random").uniform(60,98),0)
+    d_ex=__import__("random").randint(1,6); d_mh=__import__("random").randint(3,9)
+    d_in={"age":20,"gender":"Male","study_hours_per_day":d_study,"social_media_hours":d_social,
+          "netflix_hours":1.0,"part_time_job":"No","attendance_percentage":d_att,
+          "sleep_hours":d_sleep,"diet_quality":"Good","exercise_frequency":d_ex,
+          "parental_education_level":"Bachelor","internet_quality":"Good",
+          "mental_health_rating":d_mh,"extracurricular_participation":"No"}
+    try: ds=predict_score(model,features,d_in)
+    except: ds="—"
 
-# ═══════════════════════════════════════════════
-#  PAGE: PREDICT & PLAN
-# ═══════════════════════════════════════════════
-elif page == "🔮 Predict & Plan":
-
-    st.markdown(f"""
-    <div class="ts-badge">🔮 Prediction Engine</div>
-    <div class="ts-heading" style="margin-top: 8px;">Predict Your Score & Get a Study Plan</div>
-    <div class="ts-subheading">Enter your daily habits below and let AI generate your personalized plan</div>
-    """, unsafe_allow_html=True)
-
-    with st.form("prediction_form"):
-        st.markdown("#### 📊 Your Daily Habits")
-        st.markdown("---")
-
-        col1, col2 = st.columns(2)
-        with col1:
-            study_hours = st.slider("📖 Study Hours Per Day", 0.0, 12.0, 3.0, 0.5)
-            sleep_hours = st.slider("😴 Sleep Hours Per Night", 2.0, 12.0, 7.0, 0.5)
-            social_media = st.slider("📱 Social Media Hours", 0.0, 8.0, 2.0, 0.5)
-            netflix_hours = st.slider("📺 Entertainment Hours", 0.0, 6.0, 1.0, 0.5)
-            attendance = st.slider("🏫 Attendance %", 30.0, 100.0, 80.0, 1.0)
-
-        with col2:
-            age = st.slider("🎂 Age", 16, 30, 20)
-            exercise = st.slider("🏃 Exercise (days/week)", 0, 7, 3)
-            mental_health = st.slider("🧠 Mental Health (1-10)", 1, 10, 5)
-            gender = st.selectbox("👤 Gender", ["Male", "Female", "Other"])
-            part_time = st.selectbox("💼 Part-time Job?", ["No", "Yes"])
-            diet = st.selectbox("🥗 Diet Quality", ["Good", "Fair", "Poor"])
-            internet = st.selectbox("🌐 Internet Quality", ["Good", "Average", "Poor"])
-            parent_edu = st.selectbox("🎓 Parental Education", ["High School", "Bachelor", "Master", "None"])
-            extra = st.selectbox("🎭 Extracurricular?", ["No", "Yes"])
-
-        submitted = st.form_submit_button("🔮 Predict My Score & Generate Plan")
-
-    if submitted:
-        student_raw = {
-            "age": age, "gender": gender,
-            "study_hours_per_day": study_hours,
-            "social_media_hours": social_media,
-            "netflix_hours": netflix_hours,
-            "part_time_job": part_time,
-            "attendance_percentage": attendance,
-            "sleep_hours": sleep_hours,
-            "diet_quality": diet,
-            "exercise_frequency": exercise,
-            "parental_education_level": parent_edu,
-            "internet_quality": internet,
-            "mental_health_rating": mental_health,
-            "extracurricular_participation": extra,
-        }
-
-        student_encoded = {}
-        for key, val in student_raw.items():
-            if key in encoders:
-                try:
-                    student_encoded[key] = encoders[key].transform([str(val)])[0]
-                except ValueError:
-                    student_encoded[key] = 0
-            else:
-                student_encoded[key] = val
-
-        predicted = predict_score(model, features, student_encoded)
-        plan = generate_study_plan(predicted, student_raw)
-
-        st.markdown("---")
-
-        # Score
-        tier = plan["tier"]
-        tc = plan["tier_color"]
-        if tier == "intensive":
-            sbg = f"{'#1a0505' if is_dark else '#FEF2F2'}"
-        elif tier == "moderate":
-            sbg = f"{'#1a1505' if is_dark else '#FFFBEB'}"
-        else:
-            sbg = f"{'#051a0f' if is_dark else '#ECFDF5'}"
-
-        st.markdown(f"""
-        <div class="ts-score" style="background: {sbg}; border-color: {tc}30;">
-            <div class="ts-score-tag" style="color: {tc};">PREDICTED EXAM SCORE</div>
-            <div class="ts-score-num" style="color: {tc};">{predicted}</div>
-            <div class="ts-score-tag" style="color: {TEXT_MUTED};">out of 100</div>
-            <div style="margin-top: 14px;">
-                <span class="ts-badge" style="background: {tc}12; color: {tc}; border-color: {tc}40;">
-                    {plan['tier_label']}
-                </span>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # Summary
-        st.info(plan['summary'])
-
-        # ─── CHARTS: Habit Analysis ───
-        st.markdown("### 📊 Your Habit Analysis")
-
-        chart_col1, chart_col2 = st.columns(2)
-
-        with chart_col1:
-            # Bar chart: Your habits vs ideal
-            habit_labels = ['Study\nHours', 'Sleep\nHours', 'Social\nMedia', 'Netflix\nHours',
-                            'Attendance\n(%÷10)', 'Exercise\n(days)', 'Mental\nHealth']
-            your_vals = [study_hours, sleep_hours, social_media, netflix_hours,
-                         attendance / 10, exercise, mental_health]
-            ideal_vals = [5, 7.5, 1.5, 1.0, 8.5, 4, 8]
-
-            fig_habits, ax_habits = plt.subplots(figsize=(8, 4.5))
-            fig_habits.patch.set_facecolor('#0B0E18' if is_dark else '#F5F3FF')
-            ax_habits.set_facecolor('#0B0E18' if is_dark else '#F5F3FF')
-
-            x_pos = np.arange(len(habit_labels))
-            width = 0.35
-            bars1 = ax_habits.bar(x_pos - width/2, your_vals, width, label='Your Habits',
-                                  color='#7C3AED')
-            bars2 = ax_habits.bar(x_pos + width/2, ideal_vals, width, label='Ideal Range',
-                                  color='#22D3EE', alpha=0.7)
-
-            ax_habits.set_xticks(x_pos)
-            ax_habits.set_xticklabels(habit_labels, fontsize=8,
-                                      color='#E2E8F0' if is_dark else '#1E1B4B')
-            ax_habits.tick_params(axis='y', colors='#94A3B8' if is_dark else '#475569')
-            ax_habits.legend(fontsize=9, facecolor='#141929' if is_dark else '#FFFFFF',
-                             edgecolor='none',
-                             labelcolor='#E2E8F0' if is_dark else '#1E1B4B')
-            ax_habits.set_title('Your Habits vs Ideal', fontsize=13, fontweight='bold',
-                                color='#E2E8F0' if is_dark else '#1E1B4B', pad=12)
-            ax_habits.spines['top'].set_visible(False)
-            ax_habits.spines['right'].set_visible(False)
-            ax_habits.spines['left'].set_color('#333' if is_dark else '#DDD')
-            ax_habits.spines['bottom'].set_color('#333' if is_dark else '#DDD')
-            plt.tight_layout()
-            st.pyplot(fig_habits)
-            plt.close(fig_habits)
-
-        with chart_col2:
-            # Donut chart: Time distribution
-            time_data = {
-                'Study': study_hours,
-                'Sleep': sleep_hours,
-                'Social Media': social_media,
-                'Entertainment': netflix_hours,
-                'Other': max(0, 24 - study_hours - sleep_hours - social_media - netflix_hours - 8)
-            }
-            labels_pie = list(time_data.keys())
-            sizes_pie = list(time_data.values())
-            colors_pie = ['#7C3AED', '#22D3EE', '#F59E0B', '#EF4444', '#6B7280']
-
-            fig_pie, ax_pie = plt.subplots(figsize=(8, 4.5))
-            fig_pie.patch.set_facecolor('#0B0E18' if is_dark else '#F5F3FF')
-
-            wedges, texts, autotexts = ax_pie.pie(
-                sizes_pie, labels=labels_pie, colors=colors_pie, autopct='%1.0f%%',
-                startangle=90, pctdistance=0.78,
-                wedgeprops=dict(width=0.45, edgecolor='#0B0E18' if is_dark else '#F5F3FF',
-                                linewidth=2)
-            )
-            for t in texts:
-                t.set_color('#E2E8F0' if is_dark else '#1E1B4B')
-                t.set_fontsize(9)
-            for t in autotexts:
-                t.set_color('#FFFFFF')
-                t.set_fontsize(8)
-                t.set_fontweight('bold')
-            ax_pie.set_title('Your 24-Hour Time Distribution', fontsize=13, fontweight='bold',
-                              color='#E2E8F0' if is_dark else '#1E1B4B', pad=12)
-            plt.tight_layout()
-            st.pyplot(fig_pie)
-            plt.close(fig_pie)
-
-        st.markdown("---")
-
-        # ─── Schedule (Table) + Goals ───
-        col1, col2 = st.columns([3, 2])
-        with col1:
-            st.markdown("### 📅 Recommended Daily Schedule")
-            schedule_data = []
-            for time_slot, activity in plan["study_schedule"].items():
-                schedule_data.append({"⏰ Time Slot": time_slot, "📝 Activity": activity})
-            schedule_df = pd.DataFrame(schedule_data)
-            st.dataframe(
-                schedule_df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "⏰ Time Slot": st.column_config.TextColumn(width="medium"),
-                    "📝 Activity": st.column_config.TextColumn(width="large"),
-                }
-            )
-
-        with col2:
-            st.markdown("### 🎯 This Week's Goals")
-            if plan["weekly_goals"]:
-                for i, goal in enumerate(plan["weekly_goals"], 1):
-                    st.markdown(f"**{i}.** {goal}")
-            else:
-                st.success("✅ Your habits are great! Keep it up!")
-
-        # ─── Habit Analysis Cards (like reference screenshot) ───
-        st.markdown(f"""
-        <div class="ts-heading">📋 Habit Analysis</div>
-        """, unsafe_allow_html=True)
-
-        # Count statuses
-        critical_count = sum(1 for r in plan["recommendations"] if r["status"] == "critical")
-        warning_count = sum(1 for r in plan["recommendations"] if r["status"] == "warning")
-        good_count = sum(1 for r in plan["recommendations"] if r["status"] == "good")
-
-        # Status summary row
-        sc1, sc2, sc3 = st.columns(3)
-        with sc1:
-            st.markdown(f"""
-            <div style="padding: 12px 0;">
-                <span style="color: #EF4444; font-size: 0.85rem; font-weight: 600;">
-                    🔴 Critical Issues
-                </span>
-                <div style="font-size: 2rem; font-weight: 900; color: {TEXT_PRIMARY}; margin-top: 4px;">
-                    {critical_count}
-                </div>
-            </div>""", unsafe_allow_html=True)
-        with sc2:
-            st.markdown(f"""
-            <div style="padding: 12px 0;">
-                <span style="color: #F59E0B; font-size: 0.85rem; font-weight: 600;">
-                    🟡 Needs Improvement
-                </span>
-                <div style="font-size: 2rem; font-weight: 900; color: {TEXT_PRIMARY}; margin-top: 4px;">
-                    {warning_count}
-                </div>
-            </div>""", unsafe_allow_html=True)
-        with sc3:
-            st.markdown(f"""
-            <div style="padding: 12px 0;">
-                <span style="color: #10B981; font-size: 0.85rem; font-weight: 600;">
-                    🟢 Going Well
-                </span>
-                <div style="font-size: 2rem; font-weight: 900; color: {TEXT_PRIMARY}; margin-top: 4px;">
-                    {good_count}
-                </div>
-            </div>""", unsafe_allow_html=True)
-
-        st.markdown("")
-
-        # Individual recommendation cards
-        for rec in plan["recommendations"]:
-            status = rec["status"]
-
-            if status == "critical":
-                dot_color = "#EF4444"
-                border_color = "#EF4444"
-                card_bg = "#1a0505" if is_dark else "#FEF2F2"
-            elif status == "warning":
-                dot_color = "#F59E0B"
-                border_color = "#F59E0B"
-                card_bg = "#1a1505" if is_dark else "#FFFBEB"
-            else:
-                dot_color = "#10B981"
-                border_color = "#10B981"
-                card_bg = "#051a0f" if is_dark else "#ECFDF5"
-
-            st.markdown(f"""
-            <div style="
-                background: {card_bg};
-                border-left: 4px solid {border_color};
-                border-radius: 12px;
-                padding: 20px 24px;
-                margin-bottom: 14px;
-                border: 1px solid {border_color}25;
-                border-left: 4px solid {border_color};
-            ">
-                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
-                    <span style="color: {dot_color}; font-size: 1.4rem;">●</span>
-                    <span style="font-size: 1.1rem; font-weight: 700; color: {dot_color};">
-                        {rec['icon']} {rec['area']}
-                    </span>
-                </div>
-                <div style="font-size: 0.88rem; color: {TEXT_SECONDARY}; margin-bottom: 8px;">
-                    Current: <strong style="color: {TEXT_PRIMARY};">{rec['current']}</strong>
-                    &nbsp;|&nbsp;
-                    Recommended: <strong style="color: {dot_color};">{rec['target']}</strong>
-                </div>
-                <div style="font-size: 0.88rem; color: {TEXT_SECONDARY}; line-height: 1.6;">
-                    {rec['tip']}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        st.markdown("---")
-        st.success(plan['motivation'])
-
-
-# ═══════════════════════════════════════════════
-#  PAGE: MODEL INSIGHTS
-# ═══════════════════════════════════════════════
-elif page == "📊 Model Insights":
-
-    st.markdown(f"""
-    <div class="ts-badge">📊 Analytics Dashboard</div>
-    <div class="ts-heading" style="margin-top: 8px;">Model Performance & Insights</div>
-    <div class="ts-subheading">Understand how the Linear Regression model works and performs</div>
-    """, unsafe_allow_html=True)
-
-    c1, c2, c3, c4 = st.columns(4)
+    import streamlit as st2; st2=st
+    c1,c2=st.columns([3,2])
     with c1:
-        st.markdown(f'<div class="ts-metric"><div class="ts-metric-val">{metrics.get("R2_Score","N/A")}</div><div class="ts-metric-label">R² Score</div></div>', unsafe_allow_html=True)
+        st.markdown(f"""
+        <div class="badge">🤖 XGBoost-Powered Study Tool</div>
+        <div style="font-size:2.6rem;font-weight:900;color:{TP};line-height:1.15;
+                    letter-spacing:-1.5px;margin-bottom:14px;">
+          Transform Your<br>Study Habits Into<br>Better Grades
+        </div>
+        <div style="font-size:1rem;color:{TS};line-height:1.75;max-width:500px;">
+          Analyse habits, get an XGBoost-predicted exam score, a personalised study plan,
+          spaced-repetition schedule, and gamified achievements — all in one place.
+        </div>""", unsafe_allow_html=True)
     with c2:
-        st.markdown(f'<div class="ts-metric"><div class="ts-metric-val">{metrics.get("MAE","N/A")}</div><div class="ts-metric-label">MAE</div></div>', unsafe_allow_html=True)
-    with c3:
-        st.markdown(f'<div class="ts-metric"><div class="ts-metric-val">{metrics.get("MSE","N/A")}</div><div class="ts-metric-label">MSE</div></div>', unsafe_allow_html=True)
-    with c4:
-        st.markdown(f'<div class="ts-metric"><div class="ts-metric-val">{metrics.get("RMSE","N/A")}</div><div class="ts-metric-label">RMSE</div></div>', unsafe_allow_html=True)
+        st.markdown(f"""
+        <div style="background:#22D3EE;border-radius:16px;padding:20px;
+                    box-shadow:8px 8px 0 rgba(0,0,0,0.15);border:2px solid rgba(0,0,0,0.1);">
+          <div style="display:flex;gap:6px;margin-bottom:12px;">
+            <span style="width:12px;height:12px;border-radius:50%;background:#EF4444;display:inline-block;"></span>
+            <span style="width:12px;height:12px;border-radius:50%;background:#F59E0B;display:inline-block;"></span>
+            <span style="width:12px;height:12px;border-radius:50%;background:#10B981;display:inline-block;"></span>
+          </div>
+          <div style="font-weight:700;color:#1E1B4B;margin-bottom:10px;">📊 Live Analysis</div>
+          <div style="background:#fff;border-radius:8px;padding:14px;font-size:0.82rem;color:#64748B;">
+            📖 Study: <b>{d_study}</b>h &nbsp;|&nbsp; 😴 Sleep: <b>{d_sleep}</b>h<br>
+            📱 Social: <b>{d_social}</b>h &nbsp;|&nbsp; 🏃 Exercise: <b>{d_ex}</b>d/wk<br>
+            🏫 Attendance: <b>{int(d_att)}%</b> &nbsp;|&nbsp; 🧠 Mental: <b>{d_mh}/10</b>
+          </div>
+          <div style="background:#10B981;color:white;border-radius:8px;padding:10px;
+                      text-align:center;font-weight:700;margin-top:12px;">
+            🎯 Predicted: {ds} / 100
+          </div>
+        </div>""", unsafe_allow_html=True)
 
-    st.markdown(f'<div class="ts-divider"></div>', unsafe_allow_html=True)
+    st.markdown(f'<div style="height:1px;background:{BC};margin:28px 0;"></div>', unsafe_allow_html=True)
+    c1,c2,c3,c4=st.columns(4)
+    for col,val,lbl in [(c1,"1000+","Students"),(c2,str(r2),"R² Accuracy"),(c3,"XGBoost","Algorithm"),(c4,"SM-2","Review Engine")]:
+        with col:
+            st.markdown(f'<div style="text-align:center;"><div style="font-size:1.5rem;font-weight:900;color:{TP};">{val}</div><div style="font-size:0.75rem;color:{TM};text-transform:uppercase;letter-spacing:0.5px;">{lbl}</div></div>', unsafe_allow_html=True)
 
+
+# ═══════════ PREDICT & PLAN ═══════════
+elif page == "🔮 Predict & Plan":
+    st.markdown(f'<div class="badge">🔮 Prediction Engine</div><h2 style="color:{TP};margin:4px 0 4px;">Predict Score & Get Study Plan</h2><p style="color:{TS};">Enter habits → XGBoost predicts → get your personalised plan + email it</p>', unsafe_allow_html=True)
+
+    tab_predict, tab_syllabus = st.tabs(["📊 Habit Predictor", "📄 Syllabus PDF Parser"])
+
+    with tab_predict:
+        with st.form("pred_form"):
+            st.markdown("#### 📊 Your Daily Habits")
+            c1,c2=st.columns(2)
+            with c1:
+                study=st.slider("📖 Study Hours/Day",0.0,12.0,3.0,0.5)
+                sleep=st.slider("😴 Sleep Hours",2.0,12.0,7.0,0.5)
+                social=st.slider("📱 Social Media Hours",0.0,8.0,2.0,0.5)
+                netflix=st.slider("📺 Entertainment Hours",0.0,6.0,1.0,0.5)
+                attend=st.slider("🏫 Attendance %",30.0,100.0,80.0,1.0)
+            with c2:
+                age=st.slider("🎂 Age",16,30,20)
+                exercise=st.slider("🏃 Exercise (days/week)",0,7,3)
+                mhealth=st.slider("🧠 Mental Health (1-10)",1,10,5)
+                gender=st.selectbox("👤 Gender",["Male","Female","Other"])
+                ptjob=st.selectbox("💼 Part-time Job?",["No","Yes"])
+                diet=st.selectbox("🥗 Diet Quality",["Good","Fair","Poor"])
+                internet=st.selectbox("🌐 Internet Quality",["Good","Average","Poor"])
+                pedu=st.selectbox("🎓 Parental Education",["High School","Bachelor","Master","None"])
+                extra=st.selectbox("🎭 Extracurricular?",["No","Yes"])
+            email_send=st.text_input("📧 Email plan to (optional):",placeholder="you@example.com")
+            submitted=st.form_submit_button("🔮 Predict & Generate Plan")
+
+        if submitted:
+            raw={"age":age,"gender":gender,"study_hours_per_day":study,
+                 "social_media_hours":social,"netflix_hours":netflix,"part_time_job":ptjob,
+                 "attendance_percentage":attend,"sleep_hours":sleep,"diet_quality":diet,
+                 "exercise_frequency":exercise,"parental_education_level":pedu,
+                 "internet_quality":internet,"mental_health_rating":mhealth,
+                 "extracurricular_participation":extra}
+            predicted=predict_score(model,features,raw)
+            plan=generate_study_plan(predicted,raw)
+
+            # Gamification
+            u=cur_user()
+            if u:
+                sr=log_study_session(u["id"],study,predicted,DB_PATH)
+                for bk in sr.get("new_badges",[]):
+                    bd=BADGE_DEFINITIONS.get(bk,{})
+                    st.success(f"🎉 Badge: **{bd.get('icon','🏅')} {bd.get('name',bk)}**")
+                if sr.get("xp_earned",0)>0:
+                    st.info(f"⚡ +{sr['xp_earned']} XP | 🔥 Streak: {sr['streak']} days")
+
+            tier=plan["tier"]; tc=plan["tier_color"]
+            sbg=("#1a0505" if D else "#FEF2F2") if tier=="intensive" else ("#1a1505" if D else "#FFFBEB") if tier=="moderate" else ("#051a0f" if D else "#ECFDF5")
+            st.markdown(f"""
+            <div style="background:{sbg};border:2px solid {tc}30;border-radius:20px;
+                        padding:36px;text-align:center;margin:20px 0;">
+              <div style="font-size:0.75rem;font-weight:700;color:{tc};text-transform:uppercase;letter-spacing:3px;">PREDICTED SCORE</div>
+              <div style="font-size:4.5rem;font-weight:900;color:{tc};line-height:1;">{predicted}</div>
+              <div style="font-size:0.8rem;color:{TM};">out of 100</div>
+            </div>""", unsafe_allow_html=True)
+            st.info(plan["summary"])
+
+            st.markdown("### 📅 Daily Schedule")
+            sched=[{"⏰ Time":ts,"📝 Activity":a} for ts,a in plan["study_schedule"].items()]
+            st.dataframe(pd.DataFrame(sched),use_container_width=True,hide_index=True)
+
+            st.markdown("### 🎯 Weekly Goals")
+            for i,g in enumerate(plan.get("weekly_goals",[]),1):
+                st.markdown(f"**{i}.** {g}")
+
+            # Habit charts
+            st.markdown("### 📊 Habit Analysis")
+            cc1,cc2=st.columns(2)
+            with cc1:
+                lbls=["Study","Sleep","Social","Netflix","Attend/10","Exercise","Mental"]
+                yv=[study,sleep,social,netflix,attend/10,exercise,mhealth]
+                iv=[5,7.5,1.5,1.0,8.5,4,8]
+                fig,ax=plt.subplots(figsize=(7,4))
+                fig.patch.set_facecolor("#0B0E18" if D else "#F5F3FF")
+                ax.set_facecolor("#0B0E18" if D else "#F5F3FF")
+                x=range(len(lbls)); w=0.35
+                ax.bar([i-w/2 for i in x],yv,w,label="Yours",color="#7C3AED")
+                ax.bar([i+w/2 for i in x],iv,w,label="Ideal",color="#22D3EE",alpha=0.7)
+                ax.set_xticks(list(x)); ax.set_xticklabels(lbls,fontsize=8,color="#E2E8F0" if D else "#1E1B4B")
+                ax.legend(fontsize=8,facecolor="#141929" if D else "#fff",edgecolor="none",labelcolor="#E2E8F0" if D else "#1E1B4B")
+                ax.set_title("Habits vs Ideal",color="#E2E8F0" if D else "#1E1B4B",fontweight="bold")
+                ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+                plt.tight_layout(); st.pyplot(fig); plt.close(fig)
+            with cc2:
+                td={"Study":study,"Sleep":sleep,"Social":social,"Entertainment":netflix,
+                    "Other":max(0,24-study-sleep-social-netflix-8)}
+                fig2,ax2=plt.subplots(figsize=(7,4))
+                fig2.patch.set_facecolor("#0B0E18" if D else "#F5F3FF")
+                ax2.pie(td.values(),labels=td.keys(),colors=["#7C3AED","#22D3EE","#F59E0B","#EF4444","#6B7280"],
+                        autopct="%1.0f%%",startangle=90,wedgeprops=dict(width=0.45,edgecolor="#0B0E18" if D else "#F5F3FF",linewidth=2))
+                ax2.set_title("24-Hour Distribution",color="#E2E8F0" if D else "#1E1B4B",fontweight="bold")
+                plt.tight_layout(); st.pyplot(fig2); plt.close(fig2)
+
+            st.success(plan.get("motivation","Keep going! 💪"))
+
+
+            # Email sending
+            if email_send and email_send.strip():
+                with st.spinner('Sending study plan email...'):
+                    syllabus_topics=st.session_state.get('syllabus_topics')
+                    course_name=st.session_state.get('course_name')
+                    er=send_study_plan_email(
+                        recipient_email=email_send.strip(),
+                        student_name=auth_user['display_name'],
+                        predicted_score=predicted,
+                        plan=plan,
+                        syllabus_topics=syllabus_topics,
+                        course_name=course_name,
+                    )
+                if er['success']:
+                    st.success('Study plan sent to ' + email_send + '!')
+                else:
+                    st.error('Email failed: ' + er['error'])
+
+    with tab_syllabus:
+        st.markdown('### Syllabus Parser')
+        st.markdown('<p>Upload your syllabus PDF - topics are extracted automatically. Uses Gemini AI when available, falls back to local text parsing otherwise.</p>', unsafe_allow_html=True)
+        pdf_file=st.file_uploader('Upload Syllabus PDF',type=['pdf'],key='syllabus_pdf')
+        if pdf_file:
+            with st.spinner('Analysing your syllabus...'):
+                result=parse_syllabus_pdf(pdf_file.read())
+            if result['success']:
+                st.session_state['syllabus_topics']=result['topics']
+                st.session_state['course_name']=result['course_name']
+                src=result.get('source','')
+                if 'Gemini' in src:
+                    st.success(result['course_name'] + ' - ' + str(len(result['topics'])) + ' topics via ' + src + '!')
+                else:
+                    st.success(result['course_name'] + ' - ' + str(len(result['topics'])) + ' topics extracted (local parser)!')
+                    st.info('Gemini quota exhausted - used local text parser. Add a fresh GEMINI_API_KEY to .env for best results.')
+                if result.get('gemini_note'):
+                    with st.expander('Gemini API note'):
+                        st.warning(result['gemini_note'])
+                for unit in result.get('units',[]):
+                    with st.expander(unit['unit'] + ' (' + str(len(unit['topics'])) + ' topics)'):
+                        for t in unit['topics']:
+                            st.markdown('- ' + t)
+                st.markdown('**All Topics:**')
+                pills=' '.join(result['topics'])
+                st.markdown(pills)
+                st.info('These topics will be included in your next study plan email.')
+            else:
+                st.error('Error: ' + result['error'])
+
+
+# ═══════════ REVIEW SCHEDULE ═══════════
+elif page == "🧠 Review Schedule":
+    st.markdown(f'<div class="badge">🧠 SM-2 Spaced Repetition</div><h2 style="color:{TP};margin:4px 0 4px;">Review Schedule</h2>', unsafe_allow_html=True)
+    u=cur_user()
+    if not u: st.warning("Profile not found."); st.stop()
+    uid=u["id"]
+    ac1,ac2=st.columns([3,1])
+    with ac1: new_topic=st.text_input("Topic name",placeholder="e.g. Binary Trees",label_visibility="collapsed",key="nt")
+    with ac2:
+        if st.button("➕ Add",key="add_t") and new_topic.strip():
+            ok=add_topic(uid,new_topic.strip(),DB_PATH)
+            st.success(f"Added!" if ok else f"Already exists."); st.rerun()
+    st.markdown(f'<div style="height:1px;background:{BC};margin:20px 0;"></div>', unsafe_allow_html=True)
+    due=get_due_items(uid,DB_PATH); allv=get_all_items(uid,DB_PATH)
+    if due:
+        st.markdown(f"### 📅 Due Today — {len(due)} item(s)")
+        for item in due:
+            ec="#10B981" if item["ease_factor"]>=2.5 else "#F59E0B" if item["ease_factor"]>=1.8 else "#EF4444"
+            st.markdown(f'<div class="review-card"><b style="color:{TP};">{item["topic"]}</b> <span style="font-size:0.8rem;color:{TM};">· Reps:{item["repetitions"]} · Interval:{item["interval"]}d · Ease:<span style="color:{ec};">{item["ease_factor"]:.2f}</span></span></div>', unsafe_allow_html=True)
+            qc,bc,dc=st.columns([4,2,1])
+            with qc:
+                q=st.select_slider(f"q_{item['id']}",options=[0,1,2,3,4,5],value=3,
+                    format_func=lambda x:{0:"0-Blackout",1:"1-Barely",2:"2-Wrong",3:"3-Hard",4:"4-Hesitant",5:"5-Perfect!"}[x],
+                    label_visibility="collapsed",key=f"qs_{item['id']}")
+            with bc:
+                if st.button("✅ Mark",key=f"rb_{item['id']}"):
+                    r=update_review(uid,item["topic"],q,DB_PATH)
+                    xpa,rbs=log_review_xp(uid,q,DB_PATH)
+                    if xpa>0: st.info(f"⚡ +{xpa} XP | Next: {r['next_review_date']}")
+                    st.rerun()
+            with dc:
+                if st.button("🗑️",key=f"del_{item['id']}"): delete_topic(uid,item["topic"],DB_PATH); st.rerun()
+    else:
+        st.success("🎉 All caught up! No reviews due today.")
+    fut=[i for i in allv if i not in due]
+    if fut:
+        st.markdown("### 📋 Upcoming")
+        rows=[{"Topic":i["topic"],"Next Review":i["next_review_date"],
+               "Interval":f"{i['interval']}d","Reps":i["repetitions"],
+               "Ease":round(i["ease_factor"],2)} for i in fut]
+        st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
+    ret=get_retention_features(uid,DB_PATH)
+    if ret["topics_total"]>0:
+        st.markdown(f'<div style="height:1px;background:{BC};margin:20px 0;"></div>', unsafe_allow_html=True)
+        st.markdown("### 🧬 Retention Analytics")
+        r1,r2x,r3,r4=st.columns(4)
+        for col,val,lbl in [(r1,f"{ret['avg_ease_factor']:.2f}","Avg Ease"),
+                            (r2x,ret["topics_mastered"],"Mastered"),
+                            (r3,f"{ret['avg_interval']:.1f}d","Avg Interval"),
+                            (r4,f"{int(ret['mastery_ratio']*100)}%","Mastery")]:
+            with col: st.markdown(f'<div class="metric"><div class="metric-val">{val}</div><div class="metric-lbl">{lbl}</div></div>',unsafe_allow_html=True)
+
+
+# ═══════════ ACHIEVEMENTS ═══════════
+elif page == "🏆 Achievements":
+    st.markdown(f'<div class="badge">🏆 Gamification</div><h2 style="color:{TP};margin:4px 0 4px;">Your Achievements</h2>', unsafe_allow_html=True)
+    u=cur_user()
+    if not u: st.warning("Profile not found."); st.stop()
+    stats=get_user_stats(u["id"],DB_PATH)
+    s1,s2,s3,s4=st.columns(4)
+    for col,val,lbl,c in [(s1,f"{stats['current_streak']} 🔥","Current Streak","#F59E0B"),
+                           (s2,stats["longest_streak"],"Longest Streak","#EF4444"),
+                           (s3,f"{stats['xp']:,}","Total XP",PL),
+                           (s4,f"{stats['badges_earned']}/{stats['badges_total']}","Badges",CY)]:
+        with col: st.markdown(f'<div class="metric"><div class="metric-val" style="color:{c};">{val}</div><div class="metric-lbl">{lbl}</div></div>',unsafe_allow_html=True)
+    st.markdown(f'<div style="height:1px;background:{BC};margin:20px 0;"></div>',unsafe_allow_html=True)
+    lv=stats["level"]; xp_pct=stats["xp_pct"]
     st.markdown(f"""
-    <div class="ts-glass">
-        <h4>📖 Understanding the Metrics</h4>
-        <ul>
-            <li><strong>R² Score</strong>: How well the model explains variance (closer to 1.0 = better)</li>
-            <li><strong>MAE</strong>: Average prediction error in marks (lower = better)</li>
-            <li><strong>MSE</strong>: Penalizes large errors more heavily</li>
-            <li><strong>RMSE</strong>: Error in same unit as scores — easy to interpret</li>
-        </ul>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown(f'<div class="ts-divider"></div>', unsafe_allow_html=True)
-
-    tab1, tab2, tab3 = st.tabs(["📈 Actual vs Predicted", "🔥 Feature Importance", "🗺️ Correlation Heatmap"])
-    with tab1:
-        st.pyplot(plot_actual_vs_predicted(y_test, y_pred))
-        st.info("Each dot = a student. Closer to the red line = more accurate prediction.")
-    with tab2:
-        st.pyplot(plot_feature_importance(model, features))
-        st.info("🟢 Green = increases score | 🔴 Red = decreases score. Longer bar = stronger effect.")
-    with tab3:
-        st.pyplot(plot_correlation_heatmap(df_encoded))
-        st.info("Check the 'exam_score' row to see which habits matter most.")
-
-    st.markdown(f'<div class="ts-divider"></div>', unsafe_allow_html=True)
-
-    st.markdown(f"""
-    <div class="ts-glass">
-        <h4>🤔 Why Linear Regression?</h4>
-        <p><strong>1. Interpretability:</strong> Each coefficient shows exactly how much each habit affects scores.</p>
-        <p><strong>2. Continuous Target:</strong> Exam scores (0-100) are continuous — perfect for regression.</p>
-        <p><strong>3. Linear Relationships:</strong> Study hours & attendance have ~linear effects.</p>
-        <p><strong>4. Simplicity:</strong> Easy to train, interpret, and deploy.</p>
-        <p><strong>5. Speed:</strong> Trains instantly, predicts in milliseconds.</p>
-    </div>
-    """, unsafe_allow_html=True)
+    <div class="glass">
+      <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+        <span style="font-size:1.2rem;font-weight:900;color:{CY};">Level {lv}</span>
+        <span style="font-size:0.85rem;color:{TM};">{xp_pct}% to Level {lv+1}</span>
+      </div>
+      <div class="xp-outer"><div class="xp-inner" style="width:{xp_pct}%;"></div></div>
+      <div style="display:flex;justify-content:space-between;font-size:0.75rem;color:{TM};margin-top:4px;">
+        <span>{stats["xp_floor"]:,} XP</span><span>{stats["xp_ceil"]:,} XP</span>
+      </div>
+    </div>""", unsafe_allow_html=True)
+    st.markdown(f'<div style="height:1px;background:{BC};margin:20px 0;"></div>',unsafe_allow_html=True)
+    st.markdown(f'<h3 style="color:{TP};">🏅 Badges</h3>',unsafe_allow_html=True)
+    earned=[b for b in stats["all_badges"] if b["earned"]]
+    locked=[b for b in stats["all_badges"] if not b["earned"]]
+    if earned:
+        st.markdown("**✨ Earned**")
+        cols=st.columns(6)
+        for i,b in enumerate(earned):
+            with cols[i%6]:
+                st.markdown(f'<div style="background:{b["color"]}18;border:2px solid {b["color"]}44;border-radius:14px;padding:12px;text-align:center;margin-bottom:8px;"><div style="font-size:1.8rem;">{b["icon"]}</div><div style="font-size:0.62rem;font-weight:700;color:{b["color"]};">{b["name"]}</div></div>',unsafe_allow_html=True)
+    st.markdown(f"**🔒 Locked ({len(locked)})**")
+    cols=st.columns(6)
+    for i,b in enumerate(locked):
+        with cols[i%6]:
+            st.markdown(f'<div style="background:{CARD2};border:2px solid {BC};border-radius:14px;padding:12px;text-align:center;margin-bottom:8px;opacity:0.35;"><div style="font-size:1.8rem;">{b["icon"]}</div><div style="font-size:0.62rem;font-weight:700;color:{TM};">{b["name"]}</div></div>',unsafe_allow_html=True)
+    xp_log=stats.get("xp_log",[])
+    if xp_log:
+        st.markdown(f'<div style="height:1px;background:{BC};margin:20px 0;"></div>',unsafe_allow_html=True)
+        st.markdown(f'<h3 style="color:{TP};">⚡ Recent XP</h3>',unsafe_allow_html=True)
+        for e in xp_log:
+            ts=e["timestamp"][:16].replace("T"," ")
+            st.markdown(f'<div style="display:flex;justify-content:space-between;background:{CARD2};padding:10px 16px;border-radius:10px;margin-bottom:6px;border:1px solid {BC};"><span style="color:{TP};font-size:0.9rem;">{e["reason"]}</span><div><span style="color:{GR};font-weight:700;">+{e["amount"]} XP</span>&nbsp;<span style="color:{TM};font-size:0.75rem;">{ts}</span></div></div>',unsafe_allow_html=True)
 
 
-# ═══════════════════════════════════════════════
-#  PAGE: ABOUT
-# ═══════════════════════════════════════════════
+# ═══════════ MODEL INSIGHTS ═══════════
+elif page == "📊 Model Insights":
+    st.markdown(f'<div class="badge">📊 Analytics</div><h2 style="color:{TP};margin:4px 0 4px;">Model Performance</h2>',unsafe_allow_html=True)
+    c1,c2,c3,c4=st.columns(4)
+    for col,k,l in [(c1,"R2_Score","R² Score"),(c2,"MAE","MAE"),(c3,"RMSE","RMSE"),(c4,"MSE","MSE")]:
+        with col: st.markdown(f'<div class="metric"><div class="metric-val">{metrics.get(k,"N/A")}</div><div class="metric-lbl">{l}</div></div>',unsafe_allow_html=True)
+    st.markdown(f'<div style="height:1px;background:{BC};margin:20px 0;"></div>',unsafe_allow_html=True)
+    t1,t2,t3=st.tabs(["📈 Actual vs Predicted","🔥 Feature Importance","🗺️ Correlation"])
+    with t1: st.pyplot(plot_actual_vs_predicted(y_test,y_pred)); st.info("Each dot = one student. Closer to diagonal = better prediction.")
+    with t2: st.pyplot(plot_feature_importance(model,features)); st.info("Higher importance = stronger influence on exam score.")
+    with t3: st.pyplot(plot_correlation_heatmap(df_enc)); st.info("Check the exam_score row/column for habit correlations.")
+
+
+# ═══════════ ABOUT ═══════════
 elif page == "ℹ️ About":
-
-    st.markdown(f"""
-    <div class="ts-badge">ℹ️ About This Project</div>
-    <div class="ts-heading" style="margin-top: 8px;">Personalized Study Plan Generator</div>
-    <div class="ts-subheading">AI/ML Mini Project — BCA 4th Semester</div>
-    """, unsafe_allow_html=True)
-
-    st.markdown(f"""
-    <div class="ts-glass">
-        <h4>🎯 Project Overview</h4>
-        <p>This <strong>AI/ML Mini Project</strong> analyzes student habits and predicts academic
-        performance using <strong>Linear Regression</strong>. Based on the prediction, it generates
-        a <strong>personalized study plan</strong> with actionable recommendations.</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    col1, col2 = st.columns(2)
-    with col1:
+    st.markdown(f'<div class="badge">ℹ️ About</div><h2 style="color:{TP};margin:4px 0 4px;">StudyGenie — XGBoost Edition</h2><p style="color:{TS};">BCA 4th Semester Mini Project</p>',unsafe_allow_html=True)
+    c1,c2=st.columns(2)
+    with c1:
         st.markdown(f"""
-        <div class="ts-glass">
-            <h4>🏗️ System Architecture</h4>
-            <p><strong>1. Data Layer</strong> — CSV dataset, Pandas</p>
-            <p><strong>2. ML Layer</strong> — Scikit-learn, Linear Regression</p>
-            <p><strong>3. Logic Layer</strong> — Study plan algorithm</p>
-            <p><strong>4. UI Layer</strong> — Streamlit, Light/Dark themes</p>
-        </div>
-        """, unsafe_allow_html=True)
-    with col2:
+        <div class="glass">
+          <h4>🏗️ Architecture</h4>
+          <p><b>1. Auth Layer</b> — bcrypt email/password (SQLite)</p>
+          <p><b>2. ML Layer</b> — XGBoost + Optuna + scikit-learn</p>
+          <p><b>3. Gemini Layer</b> — PDF syllabus parsing + topic extraction</p>
+          <p><b>4. Scheduling</b> — SM-2 Spaced Repetition Engine</p>
+          <p><b>5. Gamification</b> — Streaks, XP, Badges</p>
+          <p><b>6. Email</b> — SMTP HTML study plan delivery</p>
+        </div>""", unsafe_allow_html=True)
+    with c2:
         st.markdown(f"""
-        <div class="ts-glass">
-            <h4>🛠️ Tech Stack</h4>
-            <p>🐍 <strong>Python 3.x</strong></p>
-            <p>🐼 <strong>Pandas & NumPy</strong></p>
-            <p>🤖 <strong>Scikit-learn</strong></p>
-            <p>📊 <strong>Matplotlib & Seaborn</strong></p>
-            <p>🌐 <strong>Streamlit</strong></p>
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown(f"""
-    <div class="ts-glass">
-        <h4>📁 Project Structure</h4>
-        <pre style="color: {PURPLE}; background: {CODE_BG};
-             padding: 20px; border-radius: 12px; font-size: 0.85rem;">
-anti/
-├── dataset/
-│   └── student_habits_performance.csv
-├── saved_model/
-│   ├── linear_regression_model.pkl
-│   ├── encoders.pkl, features.pkl, metrics.pkl
-├── .streamlit/config.toml
-├── model.py          # ML pipeline
-├── study_plan.py     # Plan generator
-├── app.py            # Streamlit UI
-├── requirements.txt
-└── README.md
-        </pre>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown(f"""
-    <div class="ts-glass">
-        <h4>🚀 Future Improvements</h4>
-        <p>📈 Advanced models (Random Forest, XGBoost)</p>
-        <p>🔐 User authentication & history</p>
-        <p>📱 Mobile-responsive PWA</p>
-        <p>🗃️ Database integration</p>
-        <p>🏆 Gamification (badges, streaks)</p>
-    </div>
-    """, unsafe_allow_html=True)
+        <div class="glass">
+          <h4>🛠️ Tech Stack</h4>
+          <p>🐍 Python 3.x</p>
+          <p>⚡ XGBoost + Optuna</p>
+          <p>🤖 Google Gemini API</p>
+          <p>📄 PyMuPDF (PDF parsing)</p>
+          <p>🔐 bcrypt (auth)</p>
+          <p>📊 Matplotlib / Seaborn</p>
+          <p>🗄️ SQLite &nbsp;|&nbsp; 🌐 Streamlit</p>
+        </div>""", unsafe_allow_html=True)

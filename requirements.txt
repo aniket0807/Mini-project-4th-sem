@@ -5,3 +5,9 @@ matplotlib
 seaborn
 streamlit
 joblib
+xgboost
+optuna
+google-genai
+PyMuPDF
+bcrypt
+python-dotenv
