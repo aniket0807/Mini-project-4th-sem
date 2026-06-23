@@ -70,9 +70,11 @@ st.markdown(f"""
 [data-testid="stSidebar"]{{background:{SBGR};border-right:1px solid rgba(255,255,255,0.06);}}
 [data-testid="stSidebar"] *{{color:#E2E8F0!important;}}
 .stButton>button{{background:linear-gradient(135deg,#7C3AED,#6D28D9)!important;color:white!important;
-  border:none!important;border-radius:10px!important;padding:12px 28px!important;
-  font-weight:700!important;transition:all 0.3s!important;width:100%;}}
+  border:none!important;border-radius:10px!important;padding:10px 24px!important;
+  font-weight:700!important;transition:all 0.3s!important;font-size:0.85rem!important;}}
 .stButton>button:hover{{box-shadow:0 6px 20px rgba(124,58,237,0.35)!important;transform:translateY(-2px)!important;}}
+[data-testid="stForm"] .stButton>button{{width:100%!important;padding:12px 28px!important;}}
+[data-testid="stSidebar"] .stButton>button{{width:100%!important;}}
 .card{{background:{CARD};border:1px solid {BC};border-radius:16px;padding:24px;margin-bottom:16px;transition:all 0.3s;}}
 .card:hover{{box-shadow:0 8px 30px {HS};transform:translateY(-2px);}}
 .metric{{background:{CARD};border:1px solid {BC};border-radius:14px;padding:20px;text-align:center;}}
@@ -441,29 +443,55 @@ elif page == "🔮 Predict & Plan":
             # Habit charts
             st.markdown("### 📊 Habit Analysis")
             cc1,cc2=st.columns(2)
+            _txt=("#E2E8F0" if D else "#1E1B4B")
+            _bg=("#0B0E18" if D else "#F5F3FF")
+            _cbg=("#141929" if D else "#FFFFFF")
+            _dim=("#94A3B8" if D else "#64748B")
             with cc1:
                 lbls=["Study","Sleep","Social","Netflix","Attend/10","Exercise","Mental"]
                 yv=[study,sleep,social,netflix,attend/10,exercise,mhealth]
                 iv=[5,7.5,1.5,1.0,8.5,4,8]
-                fig,ax=plt.subplots(figsize=(7,4))
-                fig.patch.set_facecolor("#0B0E18" if D else "#F5F3FF")
-                ax.set_facecolor("#0B0E18" if D else "#F5F3FF")
-                x=range(len(lbls)); w=0.35
-                ax.bar([i-w/2 for i in x],yv,w,label="Yours",color="#7C3AED")
-                ax.bar([i+w/2 for i in x],iv,w,label="Ideal",color="#22D3EE",alpha=0.7)
-                ax.set_xticks(list(x)); ax.set_xticklabels(lbls,fontsize=8,color="#E2E8F0" if D else "#1E1B4B")
-                ax.legend(fontsize=8,facecolor="#141929" if D else "#fff",edgecolor="none",labelcolor="#E2E8F0" if D else "#1E1B4B")
-                ax.set_title("Habits vs Ideal",color="#E2E8F0" if D else "#1E1B4B",fontweight="bold")
-                ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+                fig,ax=plt.subplots(figsize=(7,4.5))
+                fig.patch.set_facecolor(_bg)
+                ax.set_facecolor(_bg)
+                x=list(range(len(lbls))); w=0.32
+                bars1=ax.bar([i-w/2 for i in x],yv,w,label="Yours",color="#7C3AED",edgecolor="#9F67FF",linewidth=0.5,zorder=3)
+                bars2=ax.bar([i+w/2 for i in x],iv,w,label="Ideal",color="#22D3EE",alpha=0.75,edgecolor="#5DE5F5",linewidth=0.5,zorder=3)
+                # Value labels on top of bars
+                for bar in bars1:
+                    h=bar.get_height()
+                    ax.text(bar.get_x()+bar.get_width()/2,h+0.15,f"{h:.1f}",ha="center",va="bottom",fontsize=7,fontweight="bold",color="#A78BFA")
+                for bar in bars2:
+                    h=bar.get_height()
+                    ax.text(bar.get_x()+bar.get_width()/2,h+0.15,f"{h:.1f}",ha="center",va="bottom",fontsize=7,fontweight="bold",color="#67E8F9")
+                ax.set_xticks(x); ax.set_xticklabels(lbls,fontsize=9,fontweight="600",color=_txt)
+                ax.tick_params(axis="y",colors=_dim,labelsize=8)
+                ax.legend(fontsize=9,facecolor=_cbg,edgecolor="none",labelcolor=_txt,framealpha=0.9,loc="upper right")
+                ax.set_title("Habits vs Ideal",color=_txt,fontweight="bold",fontsize=13,pad=12)
+                for spine in ["top","right"]:
+                    ax.spines[spine].set_visible(False)
+                for spine in ["bottom","left"]:
+                    ax.spines[spine].set_color(_dim)
+                    ax.spines[spine].set_linewidth(0.5)
+                ax.grid(axis="y",color=_dim,alpha=0.15,linewidth=0.5,zorder=0)
                 plt.tight_layout(); st.pyplot(fig); plt.close(fig)
             with cc2:
                 td={"Study":study,"Sleep":sleep,"Social":social,"Entertainment":netflix,
                     "Other":max(0,24-study-sleep-social-netflix-8)}
-                fig2,ax2=plt.subplots(figsize=(7,4))
-                fig2.patch.set_facecolor("#0B0E18" if D else "#F5F3FF")
-                ax2.pie(td.values(),labels=td.keys(),colors=["#7C3AED","#22D3EE","#F59E0B","#EF4444","#6B7280"],
-                        autopct="%1.0f%%",startangle=90,wedgeprops=dict(width=0.45,edgecolor="#0B0E18" if D else "#F5F3FF",linewidth=2))
-                ax2.set_title("24-Hour Distribution",color="#E2E8F0" if D else "#1E1B4B",fontweight="bold")
+                pie_colors=["#7C3AED","#22D3EE","#F59E0B","#EF4444","#6B7280"]
+                fig2,ax2=plt.subplots(figsize=(7,4.5))
+                fig2.patch.set_facecolor(_bg)
+                wedges,texts,autotexts=ax2.pie(
+                    td.values(),labels=td.keys(),colors=pie_colors,
+                    autopct="%1.0f%%",startangle=90,pctdistance=0.78,labeldistance=1.12,
+                    wedgeprops=dict(width=0.55,edgecolor=_bg,linewidth=2.5))
+                # Style the label texts (outer names)
+                for t in texts:
+                    t.set_color(_txt); t.set_fontsize(10); t.set_fontweight("600")
+                # Style the percentage texts (inside wedges)
+                for t in autotexts:
+                    t.set_color("#FFFFFF"); t.set_fontsize(9); t.set_fontweight("bold")
+                ax2.set_title("24-Hour Distribution",color=_txt,fontweight="bold",fontsize=13,pad=14)
                 plt.tight_layout(); st.pyplot(fig2); plt.close(fig2)
 
             st.success(plan.get("motivation","Keep going! 💪"))
@@ -501,11 +529,15 @@ elif page == "🔮 Predict & Plan":
                 if 'Gemini' in src:
                     st.success(result['course_name'] + ' - ' + str(len(result['topics'])) + ' topics via ' + src + '!')
                 else:
-                    st.success(result['course_name'] + ' - ' + str(len(result['topics'])) + ' topics extracted (local parser)!')
-                    st.info('Gemini quota exhausted - used local text parser. Add a fresh GEMINI_API_KEY to .env for best results.')
+                    st.success(result['course_name'] + ' – ' + str(len(result['topics'])) + ' topics via ' + src + '!')
+                    st.info('💡 Gemini AI was unavailable — used local text parser. Re-upload in a minute to try AI extraction.')
                 if result.get('gemini_note'):
-                    with st.expander('Gemini API note'):
-                        st.warning(result['gemini_note'])
+                    with st.expander('ℹ️ Gemini API note'):
+                        st.info('Gemini AI was temporarily unavailable — topics were extracted using the local text parser instead. '
+                                'This is usually caused by high demand on Google\'s servers and resolves on its own. '
+                                'Try uploading again in a minute for AI-powered extraction.')
+                        with st.expander('🔍 Raw error details'):
+                            st.code(result['gemini_note'], language='text')
                 for unit in result.get('units',[]):
                     with st.expander(unit['unit'] + ' (' + str(len(unit['topics'])) + ' topics)'):
                         for t in unit['topics']:
@@ -521,23 +553,27 @@ elif page == "🔮 Predict & Plan":
 # ═══════════ REVIEW SCHEDULE ═══════════
 elif page == "🧠 Review Schedule":
     st.markdown(f'<div class="badge">🧠 SM-2 Spaced Repetition</div><h2 style="color:{TP};margin:4px 0 4px;">Review Schedule</h2>', unsafe_allow_html=True)
+    # Scoped CSS — tighter spacing between review cards and controls
+    st.markdown("""<style>
+    .review-card{margin-bottom:4px!important;}
+    </style>""", unsafe_allow_html=True)
     u=cur_user()
     if not u: st.warning("Profile not found."); st.stop()
     uid=u["id"]
-    ac1,ac2=st.columns([3,1])
+    ac1,ac2=st.columns([5,1])
     with ac1: new_topic=st.text_input("Topic name",placeholder="e.g. Binary Trees",label_visibility="collapsed",key="nt")
     with ac2:
         if st.button("➕ Add",key="add_t") and new_topic.strip():
             ok=add_topic(uid,new_topic.strip(),DB_PATH)
             st.success(f"Added!" if ok else f"Already exists."); st.rerun()
-    st.markdown(f'<div style="height:1px;background:{BC};margin:20px 0;"></div>', unsafe_allow_html=True)
+    st.markdown(f'<div style="height:1px;background:{BC};margin:16px 0;"></div>', unsafe_allow_html=True)
     due=get_due_items(uid,DB_PATH); allv=get_all_items(uid,DB_PATH)
     if due:
         st.markdown(f"### 📅 Due Today — {len(due)} item(s)")
         for item in due:
             ec="#10B981" if item["ease_factor"]>=2.5 else "#F59E0B" if item["ease_factor"]>=1.8 else "#EF4444"
             st.markdown(f'<div class="review-card"><b style="color:{TP};">{item["topic"]}</b> <span style="font-size:0.8rem;color:{TM};">· Reps:{item["repetitions"]} · Interval:{item["interval"]}d · Ease:<span style="color:{ec};">{item["ease_factor"]:.2f}</span></span></div>', unsafe_allow_html=True)
-            qc,bc,dc=st.columns([4,2,1])
+            qc,bc,dc=st.columns([5,1,1])
             with qc:
                 q=st.select_slider(f"q_{item['id']}",options=[0,1,2,3,4,5],value=3,
                     format_func=lambda x:{0:"0-Blackout",1:"1-Barely",2:"2-Wrong",3:"3-Hard",4:"4-Hesitant",5:"5-Perfect!"}[x],

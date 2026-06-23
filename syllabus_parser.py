@@ -55,11 +55,10 @@ Rules:
 """
 
 _GEMINI_MODELS = [
-    "gemini-2.5-flash",        # Best — confirmed working
-    "gemini-flash-latest",     # Alias for latest flash
+    "gemini-2.5-flash",        # Best — latest flash
     "gemini-2.0-flash",        # Stable flash
     "gemini-2.0-flash-lite",   # Lighter flash
-    "gemini-flash-lite-latest",# Latest lite
+    "gemini-1.5-flash",        # Older but very stable
 ]
 
 
@@ -106,9 +105,11 @@ def _try_gemini(raw_text: str) -> Dict:
             continue
         except Exception as e:
             err_str = str(e)
-            # Rate-limited — try next model immediately (different quotas)
-            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                last_error = f"Quota exhausted for {model_name}, trying next model…"
+            # Retryable errors — try next model (different quotas / endpoints)
+            if any(code in err_str for code in
+                   ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE",
+                    "500", "INTERNAL", "overloaded")):
+                last_error = f"{model_name}: temporarily unavailable, trying next model…"
                 time.sleep(1)
                 continue
             # Hard error (auth, network) — bail out
